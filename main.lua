@@ -1,13 +1,14 @@
 -- Copy-Paste Tool for Renoise
 
 local APP_NAME = "Copy Paste"
-local APP_VERSION = "0.1"
+local APP_VERSION = "0.2"
 
 -- Global state for storing copied data
 local copied_data = nil
 local last_selection = nil
 local copy_dialog = nil
 local paste_dialog = nil
+local load_confirm_dialog = nil
 
 function keyhandler_func(dialog, key)
     return key
@@ -254,16 +255,52 @@ local function parse_volume_value(hex_str)
     end
 end
 
-local function apply_text_data(text_data)
+-- Parse selection info from pattern data header
+local function parse_selection_info(text_data)
+    local lines = {}
+    for line in text_data:gmatch("[^\n]+") do
+        table.insert(lines, line)
+    end
+
+    for _, line in ipairs(lines) do
+        local start_line, end_line, start_track, end_track = line:match("Selection: L(%d+)%-(%d+) T(%d+)%-(%d+)")
+        if start_line then
+            return {
+                start_line = tonumber(start_line),
+                end_line = tonumber(end_line),
+                start_track = tonumber(start_track),
+                end_track = tonumber(end_track)
+            }
+        end
+    end
+    return nil
+end
+
+local function apply_text_data(text_data, use_file_dimensions)
     if not text_data or text_data == "" then
         renoise.app():show_status("No data to paste")
         return false
     end
 
-    local selection = get_current_selection()
-    if not selection then
-        renoise.app():show_status("No selection for pasting")
-        return false
+    local selection
+    if use_file_dimensions then
+        -- Parse selection from file data and use it directly
+        selection = parse_selection_info(text_data)
+        if not selection then
+            renoise.app():show_status("Could not parse selection info from file")
+            return false
+        end
+
+        -- When loading from file, we ignore current selection and use file dimensions
+        log("Loading pattern with file dimensions: L" .. selection.start_line .. "-" .. selection.end_line ..
+            " T" .. selection.start_track .. "-" .. selection.end_track)
+    else
+        -- Use current selection
+        selection = get_current_selection()
+        if not selection then
+            renoise.app():show_status("No selection for pasting")
+            return false
+        end
     end
 
     local lines = {}
@@ -366,7 +403,7 @@ local function apply_text_data(text_data)
                 if not success then
                     errors_encountered = errors_encountered + 1
                     log("Error processing track " ..
-                    track_idx .. " at line " .. paste_line .. ": " .. tostring(error_msg))
+                        track_idx .. " at line " .. paste_line .. ": " .. tostring(error_msg))
                 end
 
                 track_idx = track_idx + 1
@@ -470,7 +507,7 @@ function show_paste_dialog()
                 text = "Apply",
                 width = 100,
                 notifier = function()
-                    local success = apply_text_data(text_field.text)
+                    local success = apply_text_data(text_field.text, false)
                     if success and paste_dialog then
                         paste_dialog:close()
                     end
@@ -490,6 +527,203 @@ function show_paste_dialog()
     paste_dialog = renoise.app():show_custom_dialog("Paste Pattern Data", dialog_content)
 end
 
+-- File I/O functions
+local function save_pattern_to_file(filename, pattern_data)
+    local file, err = io.open(filename, "w")
+    if not file then
+        renoise.app():show_error("Failed to save file: " .. tostring(err))
+        return false
+    end
+
+    file:write(pattern_data)
+    file:close()
+    return true
+end
+
+local function load_pattern_from_file(filename)
+    local file, err = io.open(filename, "r")
+    if not file then
+        renoise.app():show_error("Failed to load file: " .. tostring(err))
+        return nil
+    end
+
+    local content = file:read("*all")
+    file:close()
+    return content
+end
+
+local function show_save_dialog()
+    if not copied_data then
+        renoise.app():show_status("No pattern data to save. Copy a selection first.")
+        return
+    end
+
+    -- Parse current data to show info
+    local file_selection = parse_selection_info(copied_data)
+    local data_size = string.len(copied_data)
+
+    if not file_selection then
+        renoise.app():show_error("Invalid pattern data format")
+        return
+    end
+
+    local lines_count = file_selection.end_line - file_selection.start_line + 1
+    local tracks_count = file_selection.end_track - file_selection.start_track + 1
+
+    local vb = renoise.ViewBuilder()
+
+    local info_text = string.format(
+        "Pattern Info:\n" ..
+        "• Lines: %d-%d (%d lines)\n" ..
+        "• Tracks: %d-%d (%d tracks)\n" ..
+        "• Data size: %d bytes",
+        file_selection.start_line, file_selection.end_line, lines_count,
+        file_selection.start_track, file_selection.end_track, tracks_count,
+        data_size
+    )
+
+    local dialog_content = vb:column {
+        margin = 10,
+        spacing = 10,
+
+        vb:text {
+            text = "Save Pattern to File",
+            font = "big",
+            style = "strong"
+        },
+
+        vb:text {
+            text = info_text
+        },
+
+        vb:horizontal_aligner {
+            mode = "center",
+            spacing = 10,
+
+            vb:button {
+                text = "Save As...",
+                width = 100,
+                notifier = function()
+                    local filename = renoise.app():prompt_for_filename_to_write({ "regpat", "txt" }, "Save Pattern Data")
+                    if filename then
+                        -- Add .regpat extension if no extension provided
+                        if not filename:match("%.%w+$") then
+                            filename = filename .. ".regpat"
+                        end
+
+                        if save_pattern_to_file(filename, copied_data) then
+                            renoise.app():show_status("Pattern saved to: " .. filename)
+                            log("Pattern data saved to file: " .. filename)
+                        else
+                            renoise.app():show_error("Failed to save pattern to: " .. filename)
+                        end
+                    end
+                end
+            },
+
+            vb:button {
+                text = "Cancel",
+                width = 100,
+                notifier = function()
+                    -- Just close dialog
+                end
+            }
+        }
+    }
+
+    renoise.app():show_custom_dialog("Save Pattern", dialog_content)
+end
+
+local function show_load_confirmation_dialog(pattern_data, filename)
+    local file_selection = parse_selection_info(pattern_data)
+    if not file_selection then
+        renoise.app():show_error("Could not parse pattern dimensions from file")
+        return
+    end
+
+    local vb = renoise.ViewBuilder()
+
+    local lines_count = file_selection.end_line - file_selection.start_line + 1
+    local tracks_count = file_selection.end_track - file_selection.start_track + 1
+
+    local dialog_content = vb:column {
+        margin = 10,
+        spacing = 10,
+
+        vb:text {
+            text = "Load Pattern Confirmation",
+            font = "big",
+            style = "strong"
+        },
+
+        vb:text {
+            text = "File: " .. filename
+        },
+
+        vb:text {
+            text = "Pattern Dimensions:"
+        },
+
+        vb:text {
+            text = "• Lines: " .. file_selection.start_line .. "-" .. file_selection.end_line .. " (" .. lines_count .. " lines)"
+        },
+
+        vb:text {
+            text = "• Tracks: " .. file_selection.start_track .. "-" .. file_selection.end_track .. " (" .. tracks_count .. " tracks)"
+        },
+
+        vb:text {
+            text = "\nThis will overwrite the current pattern data in the specified range."
+        },
+
+        vb:horizontal_aligner {
+            mode = "center",
+            spacing = 10,
+
+            vb:button {
+                text = "Load Pattern",
+                width = 100,
+                notifier = function()
+                    local success = apply_text_data(pattern_data, true)
+                    if success then
+                        renoise.app():show_status("Pattern loaded and applied from: " .. filename)
+                        log("Pattern data loaded and applied from file: " .. filename)
+                    else
+                        renoise.app():show_status("Failed to load pattern from: " .. filename)
+                        log("Failed to apply pattern from file: " .. filename)
+                    end
+                    if load_confirm_dialog then
+                        load_confirm_dialog:close()
+                    end
+                end
+            },
+
+            vb:button {
+                text = "Cancel",
+                width = 100,
+                notifier = function()
+                    if load_confirm_dialog then
+                        load_confirm_dialog:close()
+                    end
+                end
+            }
+        }
+    }
+
+    load_confirm_dialog = renoise.app():show_custom_dialog("Load Pattern", dialog_content)
+end
+
+local function show_load_dialog()
+    local filename = renoise.app():prompt_for_filename_to_read({ "regpat", "txt" }, "Load Pattern Data")
+    if filename then
+        local pattern_data = load_pattern_from_file(filename)
+        if pattern_data then
+            copied_data = pattern_data
+            show_load_confirmation_dialog(pattern_data, filename)
+        end
+    end
+end
+
 local function show_main_dialog()
     local vb = renoise.ViewBuilder()
 
@@ -504,7 +738,7 @@ local function show_main_dialog()
         },
 ]] --
         vb:text {
-            text = "Enhanced pattern copy & paste tool with multi-column support"
+            text = "Enhanced pattern copy & paste tool with multi-column support and file I/O"
         },
 
         vb:horizontal_aligner {
@@ -513,18 +747,36 @@ local function show_main_dialog()
             vb:column {
                 --     spacing = 10,
 
-                vb:button {
-                    text = "Copy Selection",
-                    width = 200,
-                    height = 30,
-                    notifier = function() copy_selection_to_text(true) end
+                vb:row {
+                    vb:button {
+                        text = "Copy Selection",
+                        width = 95,
+                        height = 30,
+                        notifier = function() copy_selection_to_text(true) end
+                    },
+
+                    vb:button {
+                        text = "Paste Data",
+                        width = 95,
+                        height = 30,
+                        notifier = show_paste_dialog
+                    }
                 },
 
-                vb:button {
-                    text = "Paste Data",
-                    width = 200,
-                    height = 30,
-                    notifier = show_paste_dialog
+                vb:row {
+                    vb:button {
+                        text = "Save Pattern",
+                        width = 95,
+                        height = 30,
+                        notifier = show_save_dialog
+                    },
+
+                    vb:button {
+                        text = "Load Pattern",
+                        width = 95,
+                        height = 30,
+                        notifier = show_load_dialog
+                    }
                 }
             }
         },
@@ -533,6 +785,8 @@ local function show_main_dialog()
             text = "Instructions:\n" ..
                 "• Use Ctrl+A to select entire pattern in Renoise\n" ..
                 "• Copy: Shows dialog for text handling and sharing\n" ..
+                "• Save: Export current copied data to .regpat file\n" ..
+                "• Load: Import and auto-apply full pattern (no selection needed)\n" ..
                 "• Multi-column: Supports multiple note/effect columns\n" ..
                 "• Undo: Pattern edits integrate with Renoise undo"
         }
@@ -548,6 +802,8 @@ renoise.tool():add_menu_entry { name = "Pattern Editor:Tools:Copy Selection to T
     copy_selection_to_text(true)
 end }
 renoise.tool():add_menu_entry { name = "Pattern Editor:Tools:Paste Text Data", invoke = show_paste_dialog }
+renoise.tool():add_menu_entry { name = "Pattern Editor:Tools:Save Pattern to File", invoke = show_save_dialog }
+renoise.tool():add_menu_entry { name = "Pattern Editor:Tools:Load Pattern from File", invoke = show_load_dialog }
 
 
 -- Keybindings
@@ -555,6 +811,8 @@ renoise.tool():add_keybinding { name = "Pattern Editor:Tools:Copy Selection to T
     copy_selection_to_text(true)
 end }
 renoise.tool():add_keybinding { name = "Pattern Editor:Tools:Paste Text Data", invoke = show_paste_dialog }
+renoise.tool():add_keybinding { name = "Pattern Editor:Tools:Save Pattern to File", invoke = show_save_dialog }
+renoise.tool():add_keybinding { name = "Pattern Editor:Tools:Load Pattern from File", invoke = show_load_dialog }
 
 
 log(APP_NAME .. " v" .. APP_VERSION .. " loaded successfully (with multi-column support & undo integration)")

@@ -2,7 +2,7 @@
 
 ## Overview
 
-This is a copy-paste tool for Renoise that allows you to copy pattern selections as text and paste them back.
+This is a copy-paste tool for Renoise that allows you to copy pattern selections as text and paste them back, with additional save/load functionality for .regpat files.
 The final goal is to support full format specified in FORMAT_SPECIFICATION.md (under review, matter of change).
 
 ## Installation
@@ -18,6 +18,7 @@ The final goal is to support full format specified in FORMAT_SPECIFICATION.md (u
 
 ### Core Functions
 - **Dialog-based Copy/Paste**: Text handling for manual editing and sharing
+- **Save/Load Pattern Files**: Export and import patterns as .regpat files
 - **Multi-Column Support**: Handles multiple note and effect columns per track
 - **Undo Integration**: All paste operations integrate with Renoise's undo system
 - **Simple Format**: Easy to read and edit text representation
@@ -29,9 +30,36 @@ The final goal is to support full format specified in FORMAT_SPECIFICATION.md (u
 - Pattern line numbers
 - Full multi-column pattern structure
 
+### File I/O Functions
+- **Save Pattern**: Export copied pattern data to .regpat files
+- **Load Pattern**: Import pattern data from .regpat or .txt files
+- **File Format**: Standard text format compatible with external editing
+
+## .regpat File Format
+
+The tool uses a simple text format for pattern files:
+
+```
+=== RENOISE PATTERN DATA ===
+Format: Simple-V1
+Selection: L001-016 T001-005
+
+Line | T01:Track Name | T02:Track Name | T03:Track Name
+001 | C-4 01 7F 40 00 ---- | --- .. .. .. .. ---- | F#4 03 60 -- -- ----
+002 | --- .. .. .. .. ---- | D-3 02 7F 40 00 ---- | --- .. .. .. .. ----
+...
+=== END PATTERN DATA ===
+```
+
+### Format Elements
+- **Note**: Musical note (C-4, D#5, etc.) or `---` for empty
+- **Instrument**: Hex value (01-FF) or `..` for empty
+- **Volume**: Hex value (00-7F) or `..` for empty
+- **Effects**: Hex effect commands (0A20, 1200, etc.) or `----` for empty
+
 ## How to Use
 
-### Basic Workflow
+### Basic Copy/Paste Workflow
 
 1. **Select Pattern Area**
    - In the Pattern Editor, select the area you want to copy
@@ -40,13 +68,33 @@ The final goal is to support full format specified in FORMAT_SPECIFICATION.md (u
 
 2. **Copy with Dialog**
    - Use menu: `Pattern Editor > Copy Selection as Text`
+   - Or click "Copy Selection" button in the tool dialog
    - View/edit text in dialog and manually copy to clipboard
 
 3. **Paste with Dialog**
    - Select destination area in Pattern Editor
    - Use menu: `Pattern Editor > Paste Text Data`
+   - Or click "Paste Data" button in the tool dialog
    - Paste and edit text before applying to pattern
    - Automatically creates undo point
+
+### Save/Load Pattern Files
+
+#### Saving Patterns
+1. **Copy a Selection** first (steps 1-2 above)
+2. **Click "Save Pattern"** in the tool dialog
+3. **Choose filename** - .regpat extension will be added automatically
+4. **Select location** - patterns folder recommended for organization
+5. **File is saved** and ready for sharing or later use
+
+#### Loading Patterns
+1. **Click "Load Pattern"** in the tool dialog or menu
+2. **Select .regpat file** from the file browser
+3. **Review confirmation dialog** showing pattern dimensions and target area
+4. **Click "Load Pattern"** to apply directly to your song
+5. **Pattern automatically applied** using the original file dimensions (no selection required)
+
+
 
 ### Text Format Example
 
